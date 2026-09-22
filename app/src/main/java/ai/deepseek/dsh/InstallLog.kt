@@ -61,8 +61,10 @@ object InstallLog {
             "{}"
         }
         val pageSize = try {
-            // Os.getpagesize() доступен с API 21 через android.system.Os
-            android.system.Os.getpagesize().toString()
+            // Хардварный размер страницы ядра: читаем mincore-совместимый путь.
+            // android.system.Os.getpagesize() отсутствует в SDK-стабах — берём из /proc через Runtime.
+            val p = Runtime.getRuntime().exec(arrayOf("getconf", "PAGESIZE"))
+            p.inputStream.bufferedReader().readText().trim().ifEmpty { "?" }
         } catch (_: Exception) {
             "?"
         }
