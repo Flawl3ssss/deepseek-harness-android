@@ -34,7 +34,10 @@ jobs:
           mv "node-layer/node-v${NODE_VERSION}-linux-arm64" node-layer/node-tmp
           mkdir -p node-layer/opt
           mv node-layer/node-tmp node-layer/opt/node
-          /tmp/node-layer/opt/node/bin/node --version
+          # Проверка arm64-бинаря: file/type only — исполнять его на x86_64-раннере НЕЛЬЗЯ
+          # (Exec format error). Исполняемость проверит BootActivity.checkNode на телефоне.
+          file node-layer/opt/node/bin/node
+          test -x node-layer/opt/node/bin/node
       - name: Fetch proot (Termux, aarch64)
         run: |
           cd "$GITHUB_WORKSPACE"
