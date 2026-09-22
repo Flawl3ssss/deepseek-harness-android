@@ -24,9 +24,11 @@ jobs:
       - name: Download Node (linux-arm64)
         run: |
           cd /tmp
+          rm -f node.tar.xz SHASUMS-node.txt
           wget -q "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-arm64.tar.xz" -O node.tar.xz
           wget -q "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" -O SHASUMS-node.txt
-          grep "node-v${NODE_VERSION}-linux-arm64.tar.xz" SHASUMS-node.txt | sha256sum -c -
+          ls -lh node.tar.xz SHASUMS-node.txt
+          (cd /tmp && grep "node-v${NODE_VERSION}-linux-arm64.tar.xz" SHASUMS-node.txt | sha256sum -c -)
           mkdir -p node-layer
           tar -xJf node.tar.xz -C node-layer
           mv "node-layer/node-v${NODE_VERSION}-linux-arm64" node-layer/node-tmp
@@ -41,17 +43,19 @@ jobs:
       - name: Slim rootfs + pack
         run: |
           cd /tmp
+          rm -rf rootfs
           mkdir -p rootfs
           tar -xzf ubuntu-base.tar.gz -C rootfs
           # slim: docs/locales/man чистятся (место на телефоне; FACT 01: 94 ГБ, но гигиена)
           rm -rf rootfs/usr/share/doc rootfs/usr/share/man rootfs/usr/share/locale
           tar -cJf ubuntu-24.04-arm64.tar.xz -C rootfs .
           tar -cJf node-v24-linux-arm64.tar.xz -C node-layer .
-          sha256sum ubuntu-24.04-arm64.tar.xz node-v24-linux-arm64.tar.xz proot-aarch64 /tmp/proot 2>/dev/null || true
           cp /tmp/proot /tmp/proot-aarch64
           (cd /tmp && sha256sum ubuntu-24.04-arm64.tar.xz node-v24-linux-arm64.tar.xz proot-aarch64 > SHA256SUMS)
           cat /tmp/SHA256SUMS
           ls -lh /tmp/*.tar.xz /tmp/proot-aarch64
+          # пути, которые ждёт BootActivity:
+          test -f /tmp/ubuntu-24.04-arm64.tar.xz && test -f /tmp/node-v24-linux-arm64.tar.xz && test -f /tmp/SHA256SUMS
       - name: Publish release rootfs-ubuntu-1
         env:
           GH_TOKEN: ${{ github.token }}
