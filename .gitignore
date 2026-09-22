@@ -1,0 +1,23 @@
+# Gradle / Android
+.gradle/
+local.properties
+build/
+app/build/
+*.apk
+*.aab
+# proot .so собирается fetch_proot.py в CI, в репо не коммитим
+app/src/main/jniLibs/arm64-v8a/libproot.so
+# Python
+__pycache__/
+*.pyc
+# OS / editor
+.DS_Store
+.idea/
+*.iml
+# Payload/rootfs артефакты (только релизы GitHub)
+*.tar.xz
+*.sha256
+# Секреты — никогда в репо
+*.keystore
+*.jks
+.env

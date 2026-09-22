@@ -1,0 +1,66 @@
+name: rootfs
+# Сборка rootfs-ubuntu-1 (DEC-002, TASK-004): официальный Ubuntu 24.04 arm64 OCI/base +
+# Node-слой (официальный tarball) + proot-бинарь (Termux) + SHA256SUMS → релиз.
+# Пины фиксируются в SHASUMS релиза; BootActivity проверяет sha перед распаковкой.
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+env:
+  UBUNTU_BASE_URL: http://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-arm64.tar.gz
+  # SHA пинается из SHA256SUMS апстрима при сборке (см. шаг Pin) — ручной пин ниже обновлять при смене минора.
+  UBUNTU_BASE_SHA256: 7b2dced6dd56ad5e4a813fa25c8de307b655fdabc6ea9213175a92c48dabb048
+  NODE_VERSION: 24.21.0
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Ubuntu base (arm64)
+        run: |
+          cd /tmp
+          wget -q "$UBUNTU_BASE_URL" -O ubuntu-base.tar.gz
+          echo "$UBUNTU_BASE_SHA256  ubuntu-base.tar.gz" | sha256sum -c -
+      - name: Download Node (linux-arm64)
+        run: |
+          cd /tmp
+          wget -q "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-arm64.tar.xz" -O node.tar.xz
+          wget -q "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" -O SHASUMS-node.txt
+          grep "node-v${NODE_VERSION}-linux-arm64.tar.xz" SHASUMS-node.txt | sha256sum -c -
+          mkdir -p node-layer
+          tar -xJf node.tar.xz -C node-layer
+          mv "node-layer/node-v${NODE_VERSION}-linux-arm64" node-layer/node-tmp
+          mkdir -p node-layer/opt
+          mv node-layer/node-tmp node-layer/opt/node
+          /tmp/node-layer/opt/node/bin/node --version
+      - name: Fetch proot (Termux, aarch64)
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          python3 rootfs/fetch_proot.py
+          /tmp/proot --version || /tmp/proot --help | head -n 3
+      - name: Slim rootfs + pack
+        run: |
+          cd /tmp
+          mkdir -p rootfs
+          tar -xzf ubuntu-base.tar.gz -C rootfs
+          # slim: docs/locales/man чистятся (место на телефоне; FACT 01: 94 ГБ, но гигиена)
+          rm -rf rootfs/usr/share/doc rootfs/usr/share/man rootfs/usr/share/locale
+          tar -cJf ubuntu-24.04-arm64.tar.xz -C rootfs .
+          tar -cJf node-v24-linux-arm64.tar.xz -C node-layer .
+          sha256sum ubuntu-24.04-arm64.tar.xz node-v24-linux-arm64.tar.xz proot-aarch64 /tmp/proot 2>/dev/null || true
+          cp /tmp/proot /tmp/proot-aarch64
+          (cd /tmp && sha256sum ubuntu-24.04-arm64.tar.xz node-v24-linux-arm64.tar.xz proot-aarch64 > SHA256SUMS)
+          cat /tmp/SHA256SUMS
+          ls -lh /tmp/*.tar.xz /tmp/proot-aarch64
+      - name: Publish release rootfs-ubuntu-1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd /tmp
+          if gh release view rootfs-ubuntu-1 --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload rootfs-ubuntu-1 ubuntu-24.04-arm64.tar.xz node-v24-linux-arm64.tar.xz proot-aarch64 SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create rootfs-ubuntu-1 ubuntu-24.04-arm64.tar.xz node-v24-linux-arm64.tar.xz proot-aarch64 SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" --title "Ubuntu 24.04 rootfs + Node 24 + proot (arm64)"
+          fi
