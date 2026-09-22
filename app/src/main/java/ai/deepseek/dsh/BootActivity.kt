@@ -69,7 +69,7 @@ class BootActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(48, 48, 48, 32)
         }
-        scrollRoot.addView(col, ScrollView.LayoutParams(-1, -2))
+        scrollRoot.addView(col, android.widget.FrameLayout.LayoutParams(-1, -2))
         val title = TextView(this).apply {
             text = "DSH"
             textSize = 34f
