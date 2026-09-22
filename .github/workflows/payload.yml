@@ -23,7 +23,7 @@ jobs:
           node-version: '24'
       - name: Staged install DSH
         run: |
-          mkdir -p /tmp/stage
+          rm -rf /tmp/stage && mkdir -p /tmp/stage
           cd /tmp/stage
           npm init -y > /dev/null 2>&1
           npm i --no-audit --no-fund "@deepseek-ai/dsh@${DSH_PIN}"
@@ -32,12 +32,13 @@ jobs:
       - name: Compose payload
         run: |
           cd "$GITHUB_WORKSPACE"
-          mkdir -p /tmp/payload/bin /tmp/payload/node_modules
+          rm -rf /tmp/payload && mkdir -p /tmp/payload/bin /tmp/payload/node_modules
           cp payload/zen-adapter.mjs /tmp/payload/bin/zen-adapter.mjs
-          cp -r /tmp/stage/node_modules/@deepseek-ai /tmp/payload/node_modules/
-          # slim: чистим доки/тесты/сорсмапы из payload (размер!)
-          find /tmp/payload/node_modules -name "*.md" -delete
-          find /tmp/payload/node_modules -path "*__tests__*" -prune -exec rm -rf {} + 2>/dev/null || true
+          # Копируем node_modules ЦЕЛИКОМ (включая hoisted deps: js-yaml, commander, …).
+          # Копирование только @deepseek-ai рвало резолв (ERR_MODULE_NOT_FOUND js-yaml).
+          cp -r /tmp/stage/node_modules/. /tmp/payload/node_modules/
+          # slim: чистим доки из payload (размер!). Тесты/source не трогаем широко —
+          # удаление вне @deepseek-ai может порвать hoisted-зависимости.
           ADAPTER_SHA=$(sha256sum payload/zen-adapter.mjs | cut -d' ' -f1)
           cat > /tmp/payload/payload.json <<EOF
           {
