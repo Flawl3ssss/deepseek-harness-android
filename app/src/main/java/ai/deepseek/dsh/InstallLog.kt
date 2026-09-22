@@ -95,7 +95,8 @@ object InstallLog {
             }
             c.startActivity(android.content.Intent.createChooser(i, "Отправить лог"))
         } catch (e: Exception) {
-            android.widget.Toast.makeText(c, "Share failed: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+            exportToShared(c)
+            android.widget.Toast.makeText(c, "Share не удался: ${e.message}. Копия: DSH/logs/dsh-install.log. Или жми СКОПИРОВАТЬ ЛОГ.", android.widget.Toast.LENGTH_LONG).show()
         }
     }
 

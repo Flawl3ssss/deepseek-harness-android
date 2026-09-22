@@ -1,6 +1,9 @@
 package ai.deepseek.dsh
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.graphics.Typeface
 import android.os.Bundle
@@ -10,6 +13,7 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -22,13 +26,20 @@ import java.security.MessageDigest
  * Качает rootfs + proot + payload-1 + node-слой, проверяет sha256, распаковывает,
  * сидит dsh-home (zen-провайдер + дефолтная модель), smoke-тестит proot,
  * просит zen-ключ (gateKeyThenStart, R-06). Всё пишется в install-*.log (R-12).
+ *
+ * v1.0.1: ВЕСЬ лог виден прямо на экране (selectable, autoscroll) + кнопка
+ * «Скопировать лог» (буфер обмена — вставка в чат текстом) + живой прогресс
+ * скачивания в МБ (payload 76 МБ на медленной сети выглядит как «зависание»).
  */
 class BootActivity : Activity() {
     private lateinit var stepViews: List<TextView>
     private lateinit var bar: ProgressBar
     private lateinit var pct: TextView
+    private lateinit var status: TextView
     private lateinit var log: TextView
+    private lateinit var scrollRoot: ScrollView
     private lateinit var retry: Button
+    private lateinit var copyBtn: Button
     private lateinit var sendLog: Button
 
     private val steps = listOf(
@@ -53,11 +64,12 @@ class BootActivity : Activity() {
         }
         val bg = 0xFF0B0E14.toInt()
         val card = 0xFF151B26.toInt()
-        val root = LinearLayout(this).apply {
+        scrollRoot = ScrollView(this).apply { setBackgroundColor(bg) }
+        val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(bg)
-            setPadding(48, 64, 48, 32)
+            setPadding(48, 48, 48, 32)
         }
+        scrollRoot.addView(col, ScrollView.LayoutParams(-1, -2))
         val title = TextView(this).apply {
             text = "DSH"
             textSize = 34f
@@ -69,9 +81,9 @@ class BootActivity : Activity() {
             textSize = 15f
             setTextColor(0xFF9AA3B5.toInt())
         }
-        root.addView(title)
-        root.addView(sub)
-        root.addView(gap(28))
+        col.addView(title)
+        col.addView(sub)
+        col.addView(gap(24))
         val cardBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(card)
@@ -85,8 +97,8 @@ class BootActivity : Activity() {
                 setPadding(0, 8, 0, 8)
             }.also { cardBox.addView(it) }
         }
-        root.addView(cardBox)
-        root.addView(gap(24))
+        col.addView(cardBox)
+        col.addView(gap(20))
         bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100 }
         pct = TextView(this).apply {
             text = "0%"
@@ -94,32 +106,52 @@ class BootActivity : Activity() {
             setTextColor(0xFF9AA3B5.toInt())
             gravity = Gravity.END
         }
-        root.addView(bar)
-        root.addView(pct)
-        root.addView(gap(16))
+        status = TextView(this).apply {
+            text = "Подготовка…"
+            textSize = 13f
+            setTextColor(0xFFE8ECF3.toInt())
+            setPadding(0, 4, 0, 0)
+        }
+        col.addView(bar)
+        col.addView(pct)
+        col.addView(status)
+        col.addView(gap(16))
+        col.addView(TextView(this).apply {
+            text = "Лог (всё пишется сюда):"
+            textSize = 13f
+            setTextColor(0xFF9AA3B5.toInt())
+        })
         log = TextView(this).apply {
             textSize = 11f
             typeface = Typeface.MONOSPACE
             setTextColor(0xFF9AA3B5.toInt())
+            setTextIsSelectable(true)
+            minHeight = 600
+            setPadding(16, 16, 16, 16)
+            setBackgroundColor(card)
         }
-        val sv = ScrollView(this).apply { addView(log) }
-        root.addView(sv, LinearLayout.LayoutParams(-1, 0, 1f))
-        root.addView(gap(16))
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        col.addView(log)
+        col.addView(gap(16))
         retry = Button(this).apply {
             text = getString(R.string.action_retry)
             isEnabled = false
             setOnClickListener { Thread { runInstall() }.start() }
         }
+        copyBtn = Button(this).apply {
+            text = "СКОПИРОВАТЬ ЛОГ"
+            setOnClickListener { copyLog() }
+        }
         sendLog = Button(this).apply {
             text = getString(R.string.action_send_log)
             setOnClickListener { InstallLog.share(this@BootActivity) }
         }
-        row.addView(retry, LinearLayout.LayoutParams(0, -2, 1f))
-        row.addView(gap(16, true))
-        row.addView(sendLog, LinearLayout.LayoutParams(0, -2, 1f))
-        root.addView(row)
-        setContentView(root)
+        col.addView(retry, LinearLayout.LayoutParams(-1, -2))
+        col.addView(gap(12, false))
+        col.addView(copyBtn, LinearLayout.LayoutParams(-1, -2))
+        col.addView(gap(12, false))
+        col.addView(sendLog, LinearLayout.LayoutParams(-1, -2))
+        col.addView(gap(24, false))
+        setContentView(scrollRoot)
         Thread { runInstall() }.start()
     }
 
@@ -141,7 +173,19 @@ class BootActivity : Activity() {
 
     private fun say(s: String) {
         InstallLog.w(this, "boot", s)
-        ui { log.append(InstallLog.redact(s) + "\n") }
+        ui {
+            log.append(InstallLog.redact(s) + "\n")
+            // Экранный буфер не растим бесконечно (память): держим хвост ~80К символов.
+            if (log.length() > 120000) {
+                log.text = log.text.takeLast(80000)
+            }
+            scrollRoot.post { scrollRoot.fullScroll(android.view.View.FOCUS_DOWN) }
+        }
+    }
+
+    private fun setStatus(s: String) {
+        ui { status.text = s }
+        InstallLog.w(this, "boot", "status: $s")
     }
 
     private fun progress(p: Int) {
@@ -150,27 +194,51 @@ class BootActivity : Activity() {
 
     private fun runInstall() {
         ui { retry.isEnabled = false }
+        // WakeLock на время установки: Doze при погашенном экране рвёт долгие скачивания.
+        val wl = (getSystemService(POWER_SERVICE) as android.os.PowerManager)
+            .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "dsh:install")
+        try {
+            wl.acquire((30 * 60 * 1000).toLong())
+            runInstallInner()
+        } catch (e: Exception) {
+            say("FAILED: ${e.message}")
+            setStatus("Ошибка: ${e.message}")
+            ui { retry.isEnabled = true }
+        } finally {
+            try {
+                if (wl.isHeld) wl.release()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun runInstallInner() {
         try {
             say(InstallLog.deviceInfo(this))
-            // 1. rootfs Ubuntu
+            // 1. rootfs Ubuntu (~17 МБ)
+            setStatus("Скачивание Rootfs Ubuntu…")
             val rootfsTar = File(filesDir, "rootfs.tar.xz")
-            download("$DL_BASE/$ROOTFS_TAG/ubuntu-24.04-arm64.tar.xz", rootfsTar, "$DL_BASE/$ROOTFS_TAG/SHA256SUMS", "ubuntu-24.04-arm64.tar.xz")
-            mark(0, true); progress(20)
-            // 2. Node-слой
+            download("$DL_BASE/$ROOTFS_TAG/ubuntu-24.04-arm64.tar.xz", rootfsTar, "$DL_BASE/$ROOTFS_TAG/SHA256SUMS", "ubuntu-24.04-arm64.tar.xz", 0, 20, "Rootfs")
+            mark(0, true, "${rootfsTar.length() / 1048576} МБ"); progress(20)
+            // 2. Node-слой (~31 МБ)
+            setStatus("Скачивание Node-слоя…")
             val nodeTar = File(filesDir, "node.tar.xz")
-            download("$DL_BASE/$NODE_TAG/node-v24-linux-arm64.tar.xz", nodeTar, "$DL_BASE/$NODE_TAG/SHA256SUMS", "node-v24-linux-arm64.tar.xz")
-            mark(1, true); progress(32)
+            download("$DL_BASE/$NODE_TAG/node-v24-linux-arm64.tar.xz", nodeTar, "$DL_BASE/$NODE_TAG/SHA256SUMS", "node-v24-linux-arm64.tar.xz", 20, 12, "Node")
+            mark(1, true, "${nodeTar.length() / 1048576} МБ"); progress(32)
             // 3. proot (fallback-бинарь; bundled lib едет в самом APK через jniLibs)
+            setStatus("Установка proot…")
             installProotFallback()
             mark(2, true); progress(40)
-            // 4. payload-1
+            // 4. payload-1 (~76 МБ — самый долгий шаг!)
+            setStatus("Скачивание Payload DSH (~76 МБ, самый долгий шаг)…")
             val payloadTar = File(filesDir, "payload.tar.xz")
-            download("$DL_BASE/$PAYLOAD_TAG/payload-1.tar.xz", payloadTar, "$DL_BASE/$PAYLOAD_TAG/SHA256SUMS", "payload-1.tar.xz")
+            download("$DL_BASE/$PAYLOAD_TAG/payload-1.tar.xz", payloadTar, "$DL_BASE/$PAYLOAD_TAG/SHA256SUMS", "payload-1.tar.xz", 40, 15, "Payload")
             val pj = downloadText("$DL_BASE/$PAYLOAD_TAG/payload.json")
             if (!pj.contains(EXPECTED_DSH)) throw IllegalStateException("payload dshVersion mismatch (want $EXPECTED_DSH)")
             if (pj.contains("sk-")) throw IllegalStateException("payload.json looks like it contains a secret")
-            mark(3, true); progress(55)
+            mark(3, true, "${payloadTar.length() / 1048576} МБ"); progress(55)
             // 5. распаковка
+            setStatus("Распаковка…")
             say("extract rootfs…")
             untar(rootfsTar, Paths.rootfsDir(this))
             say("extract node…")
@@ -180,16 +248,19 @@ class BootActivity : Activity() {
             File(Paths.payloadDir(this), "payload.json").writeText(pj)
             mark(4, true); progress(75)
             // 6. проверка: proot smoke + node + payload.json
+            setStatus("Проверка…")
             probeProot()
             checkNode()
             mark(5, true); progress(88)
             // 7. сид dsh-home + gate ключа
+            setStatus("Запуск…")
             seedDshHome()
             mark(6, true); progress(100)
             say("done")
             ui { startMain() }
         } catch (e: Exception) {
             say("FAILED: ${e.message}")
+            setStatus("Ошибка: ${e.message}")
             ui { retry.isEnabled = true }
         }
     }
@@ -204,7 +275,7 @@ class BootActivity : Activity() {
         finish()
     }
 
-    private fun download(url: String, dst: File, sumsUrl: String, sumsName: String) {
+    private fun download(url: String, dst: File, sumsUrl: String, sumsName: String, base: Int, span: Int, label: String) {
         val expected = downloadText(sumsUrl).lines()
             .firstOrNull { it.trim().endsWith(sumsName) }
             ?.trim()?.split(Regex("\\s+"))?.firstOrNull()
@@ -213,7 +284,7 @@ class BootActivity : Activity() {
         var attempt = 0
         while (true) {
             try {
-                httpToFile(url, dst)
+                httpToFile(url, dst, label, base, span)
                 break
             } catch (e: Exception) {
                 attempt++
@@ -237,7 +308,7 @@ class BootActivity : Activity() {
         return c.inputStream.bufferedReader().readText()
     }
 
-    private fun httpToFile(url: String, dst: File) {
+    private fun httpToFile(url: String, dst: File, label: String, base: Int, span: Int) {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 30000; c.readTimeout = 60000
         val have = if (dst.exists()) dst.length() else 0L
@@ -245,6 +316,7 @@ class BootActivity : Activity() {
         c.connect()
         if (c.responseCode !in listOf(200, 206)) throw IllegalStateException("HTTP ${c.responseCode} for $url")
         val total = (c.getHeaderField("Content-Length")?.toLongOrNull() ?: 0L) + have
+        var lastUi = 0L
         FileOutputStream(dst, c.responseCode == 206).use { out ->
             val buf = ByteArray(65536)
             var done = have
@@ -253,9 +325,45 @@ class BootActivity : Activity() {
                 if (n < 0) break
                 out.write(buf, 0, n)
                 done += n
-                if (total > 0) progress(((done * 50) / total).toInt().coerceIn(0, 50))
+                val now = System.currentTimeMillis()
+                if (total > 0 && now - lastUi > 500) {
+                    lastUi = now
+                    val p = (base + (span * done / total).toInt()).coerceIn(0, 100)
+                    val mb = "$label: ${done / 1048576}/${total / 1048576} МБ"
+                    ui { bar.progress = p; pct.text = "$p%"; status.text = "Скачивание… $mb" }
+                }
+            }
+            if (total > 0) {
+                val mb = "$label: ${done / 1048576}/${total / 1048576} МБ — готово"
+                say(mb)
+            } else {
+                say("$label: скачано ${done / 1048576} МБ (размер неизвестен)")
             }
         }
+    }
+
+    /** Копия лога в буфер обмена — вставка текстом прямо в чат. */
+    private fun copyLog() {
+        Thread {
+            try {
+                val f = Paths.logsDir(this).listFiles { x -> x.name.startsWith("install-") }
+                    ?.maxByOrNull { it.lastModified() }
+                    ?: throw IllegalStateException("лог-файл не найден")
+                var text = f.readText()
+                if (text.length > 150000) text = text.takeLast(150000)
+                val clip = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val data = ClipData.newPlainText("dsh-log", InstallLog.redact(text))
+                runOnUiThread {
+                    clip.setPrimaryClip(data)
+                    Toast.makeText(this, "Лог скопирован (${text.length / 1024} КБ) — вставь в чат", Toast.LENGTH_LONG).show()
+                }
+                InstallLog.w(this, "boot", "log copied to clipboard (${text.length} chars)")
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this, "Копия не удалась: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
     }
 
     private fun sha256(f: File): String {
@@ -301,7 +409,7 @@ class BootActivity : Activity() {
             return
         }
         val dst = File(filesDir, "proot")
-        httpToFile("$DL_BASE/$ROOTFS_TAG/proot-aarch64", dst)
+        httpToFile("$DL_BASE/$ROOTFS_TAG/proot-aarch64", dst, "proot", 32, 8)
         dst.setExecutable(true)
         say("proot fallback installed")
     }
@@ -321,7 +429,12 @@ class BootActivity : Activity() {
     private fun checkNode() {
         val node = File(Paths.nodeDir(this), "bin/node")
         if (!node.exists()) {
-            // node-слой может лежать с верхним каталогом node-vXX-linux-arm64/ — нормализуем.
+            // node-слой лежит как nodeDir/opt/node (см. rootfs.yml) — проверяем и его.
+            val optNode = File(Paths.nodeDir(this), "opt/node/bin/node")
+            if (optNode.exists()) {
+                say("node present (opt/node)")
+                return
+            }
             val found = Paths.nodeDir(this).walkTopDown().firstOrNull { it.name == "node" && it.isFile }
                 ?: throw IllegalStateException("node binary missing in node-layer")
             say("node at ${found.relativeTo(Paths.nodeDir(this))}")
