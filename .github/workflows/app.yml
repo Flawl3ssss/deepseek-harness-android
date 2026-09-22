@@ -1,6 +1,7 @@
 name: app
-# Сборка APK (DEC-010, FACT-CI-01): secret-scan + assembleRelease + fresh-key dev-подпись +
-# keystore-релизы через Secrets + публикация в тег. Ключей и токенов в коде нет.
+# Сборка APK (DEC-010, FACT-CI-01): proot-jniLibs + secret-scan + assembleRelease +
+# fresh-key dev-подпись + keystore-релизы через Secrets + публикация в тег.
+# Ключей и токенов в коде нет.
 on:
   workflow_dispatch:
 permissions:
@@ -20,6 +21,37 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Fetch proot (Termux aarch64 .deb → libproot.so + loader в jniLibs)
+        run: |
+          cd /tmp
+          wget -q "http://packages.termux.org/apt/termux-main/dists/stable/main/binary-aarch64/Packages" -O Packages
+          MIRROR="http://packages.termux.org/apt/termux-main"
+          for PKG in proot libtalloc libandroid-shmem; do
+            DEB=$(awk -v p="^Package: $PKG\$" 'BEGIN{found=0} $0 ~ p {found=1} found && /^Filename:/ {print $2; exit}' Packages)
+            echo "$PKG -> $DEB"
+            wget -q "$MIRROR/$DEB" -O "$PKG.deb"
+          done
+          mkdir -p px && cd px
+          for PKG in proot libtalloc libandroid-shmem; do
+            MEMBER=$(ar t /tmp/$PKG.deb | grep '^data.tar' | head -n 1)
+            ar p /tmp/$PKG.deb "$MEMBER" > $PKG-data.tar
+            mkdir -p $PKG && tar -xf $PKG-data.tar -C $PKG
+          done
+          find . -name "proot" -o -name "libtalloc.so*" -o -name "libandroid-shmem.so*" | head -n 15
+          # proot Termux — PIE shared object с NEEDED libtalloc/libandroid-shmem.
+          # В APK: libproot.so (переименованный proot) + libtalloc.so.2 + libandroid-shmem.so
+          # в jniLibs/arm64-v8a; инвок через /system/bin/linker64; зависимости рядом ($ORIGIN).
+          JL="$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$JL"
+          PROOT_BIN=$(find . -path "*usr/bin/proot" | head -n 1)
+          TALLOC=$(find . -name "libtalloc.so*" | head -n 1)
+          SHMEM=$(find . -name "libandroid-shmem.so*" | head -n 1)
+          test -n "$PROOT_BIN" && test -n "$TALLOC" && test -n "$SHMEM"
+          cp "$PROOT_BIN" "$JL/libproot.so"
+          cp "$TALLOC" "$JL/libtalloc.so"
+          cp "$SHMEM" "$JL/libandroid-shmem.so"
+          readelf -d "$JL/libproot.so" | grep -i needed
+          ls -lh "$JL"
       - name: Install Android SDK + Gradle
         run: |
           cd /tmp
